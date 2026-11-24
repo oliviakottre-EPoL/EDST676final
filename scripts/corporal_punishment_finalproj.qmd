@@ -1,0 +1,253 @@
+---
+title: "Corporal Punishment in Schools Across Regions"
+author:
+  - Emmanuel Ayisi
+  - Olivia Kottre
+  - Andre Leon
+format:
+  html:
+    fig-width: 9
+    fig-height: 7
+execute:
+  echo: true
+  warning: false
+  message: false
+editor: visual
+---
+
+## Loading Packages
+
+```{r}
+library(tidyverse)
+library(rio)
+library(janitor)
+library(here)
+```
+
+## Importing and Inspecting the Data
+
+```{r}
+list.files(here("data"))
+```
+
+```{r}
+cp_raw <- rio::import(here("data", "Global CP Data(Sheet1).csv"))
+```
+
+```{r}
+glimpse(cp_raw)
+```
+
+## Data Cleaning and Preparation
+
+We begin by standardizing the variable names to make them consistent and easier to use in R.
+
+```{r}
+cp_clean <- janitor::clean_names(cp_raw)
+
+names(cp_clean)
+```
+
+We use `select()` to retain the five variables relevant to our analysis and remove the three empty columns.
+
+```{r}
+cp_clean <- cp_clean |>
+  select(region, cwcps, cwcps_h, percent_cps, percent_cps_h)
+
+glimpse(cp_clean)
+```
+
+We rename the variables to make their meanings clearer and improve the readability of our analysis.
+
+```{r}
+cp_clean <- cp_clean |>
+  rename(
+    countries_cp_school = cwcps,
+    countries_cp_school_home = cwcps_h,
+    pct_cp_school = percent_cps,
+    pct_cp_school_home = percent_cps_h
+  )
+
+glimpse(cp_clean)
+```
+
+The percentage variables in our dataset are stored as characters because they contain percentage symbols. To make these variables suitable for statistical analysis, we use `mutate()` together with `parse_number()`, a function from the readr package that extracts numerical values from character strings. This allows us to convert the percentages into numeric values while retaining their original numerical meaning.
+
+```{r}
+cp_clean <- cp_clean |>
+  mutate(
+    pct_cp_school = parse_number(as.character(pct_cp_school)),
+    pct_cp_school_home = parse_number(as.character(pct_cp_school_home))
+  )
+
+glimpse(cp_clean)
+```
+
+We check for missing values in the cleaned dataset to determine whether any observations require further attention before conducting our analysis.
+
+```{r}
+colSums(is.na(cp_clean))
+```
+
+We use `filter()` to check for potential inconsistencies in the dataset. Since countries that permit corporal punishment both in schools and at home are a subset of countries that permit corporal punishment in schools, their counts and percentages should not exceed those reported for schools.
+
+```{r}
+cp_clean |>
+  filter(
+    countries_cp_school_home > countries_cp_school |
+    pct_cp_school_home > pct_cp_school
+  )
+```
+
+The results indicate that none of the observations violate the specified conditions. Across all regions, the counts and percentages of countries permitting corporal punishment both in schools and at home do not exceed those of countries permitting corporal punishment in schools.
+
+We use `as_tibble()` to display and inspect the cleaned dataset before proceeding with data transformation. Unlike `table()`, which summarizes the frequencies of values or categories, `as_tibble()` preserves the original observations and variables. This allows us to review the regional counts and percentages without modifying or aggregating the data.
+
+```{r}
+print(as_tibble(cp_clean), n = Inf, width = Inf)
+```
+
+A preliminary inspection of the cleaned dataset reveals a potential inconsistency in the reported percentages for the Caribbean Islands. The counts and percentages may not correspond to the same regional denominator. This will require verification against the original data source before the final analysis. For now, we retain the original values to avoid making unverified changes to the dataset.
+
+
+### Checking the Caribbean Islands Data
+
+During data inspection, we noticed that the Caribbean Islands had 11 countries (85%) permitting corporal punishment in schools and 10 countries (63%) permitting it in both schools and at home.
+
+Assuming both percentages use the same total of 13 countries, we calculated that 10 out of 13 is approximately 77%, not 63%. We therefore used `mutate()` and `if_else()` to make this provisional adjustment in a separate dataset while keeping the original data unchanged. The regional total still needs to be verified.
+
+```{r}
+cp_corrected <- cp_clean |>
+  mutate(
+    pct_cp_school_home = if_else(
+      region == "Caribean Islands",
+      77,
+      pct_cp_school_home
+    )
+  )
+
+cp_corrected |>
+  filter(region == "Caribean Islands") |>
+  select(region, pct_cp_school, pct_cp_school_home)
+```
+
+### Restructuring the Data Using pivot_longer()
+
+We used `pivot_longer()` to reorganize our data from wide to long format. The original dataset has separate columns for corporal punishment in schools and in both schools and at home. Converting these columns into categories will make it easier to compare the two groups across regions and create visualizations.
+
+We used the corrected practice dataset (`cp_corrected`) so that our analysis includes the updated Caribbean Islands percentage.
+
+```{r}
+cp_long <- cp_corrected |>
+  pivot_longer(
+    cols = c(countries_cp_school, countries_cp_school_home),
+    names_to = "category",
+    values_to = "country_count"
+  )
+
+glimpse(cp_long)
+```
+
+### Organizing Counts and Percentages Together
+
+Our first use of `pivot_longer()` reorganized the country counts into two categories, but the percentages remained in separate columns. We refined the transformation so that each category has its corresponding country count and percentage in the same row. This makes the dataset easier to compare and analyze.
+
+```{r}
+cp_long_final <- cp_corrected |>
+  rename(
+    count_school = countries_cp_school,
+    count_school_home = countries_cp_school_home,
+    pct_school = pct_cp_school,
+    pct_school_home = pct_cp_school_home
+  ) |>
+  pivot_longer(
+    cols = -region,
+    names_to = c(".value", "category"),
+    names_pattern = "(count|pct)_(.*)"
+  ) |>
+  rename(
+    country_count = count,
+    percentage = pct
+  )
+
+glimpse(cp_long_final)
+```
+
+
+### Grouping and Summarizing the Data
+
+We used `group_by()` to organize the data into two categories: corporal punishment permitted in schools and permitted in both schools and at home.
+We then used `summarize()` to calculate the total number of countries in each category and the number of regions reporting at least one country. This helps us compare the two categories across the regions in our dataset.
+
+```{r}
+cp_summary <- cp_long_final |>
+  group_by(category) |>
+  summarize(
+    total_countries = sum(country_count),
+    regions_with_cp = sum(country_count > 0),
+    .groups = "drop"
+  )
+
+cp_summary
+```
+
+### Interpretation of the Summary Results
+
+The analysis shows that 56 countries permit corporal punishment in schools, while 55 permit it in both schools and at home, based on the regional counts in our dataset. Both categories are represented in 9 of the 11 regions.
+
+The difference of one country comes from the Caribbean Islands. These results help us understand how the two categories compare across the regions included in our data.
+
+### Creating a Comparison Table Using pivot_wider()
+
+We used `pivot_wider()` to reorganize our summary results into a side-by-side comparison. Instead of having separate rows for schools and schools-and-home, we placed the country totals in separate columns. This makes it easier to compare the two categories and present our findings.
+
+```{r}
+cp_wide <- cp_summary |>
+  select(category, total_countries) |>
+  pivot_wider(
+    names_from = category,
+    values_from = total_countries
+  )
+
+cp_wide
+```
+
+### Reviewing the Wider Table
+
+The results remain unchanged after using `pivot_wider()`. The function simply reorganized the summary from two rows into one row with separate columns for each category. This allows us to compare the results side by side without performing additional calculations.
+
+
+### Visualization 1: Comparing Country Counts Across Regions
+
+We created a grouped bar chart to compare the number of countries permitting corporal punishment in schools and in both schools and at home across the 11 regions. This helps us identify regional differences and see where the two categories have similar or different counts.
+
+```{r}
+ggplot(cp_long_final,
+       aes(x = region, y = country_count, fill = category)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Corporal Punishment Legality Across Regions",
+    x = "Region",
+    y = "Number of Countries",
+    fill = "Legal Permission"
+  ) +
+  scale_fill_discrete(
+    labels = c(
+      school = "Schools",
+      school_home = "Schools and Home"
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+### Interpretation of Visualization 1
+
+The grouped bar chart shows differences in the number of countries permitting corporal punishment across the 11 regions. Africa has the highest count (21 countries), followed by the Caribbean Islands (11) and the Middle East (9). Most regions have identical counts for the two categories, except the Caribbean Islands, where 11 countries permit corporal punishment in schools and 10 permit it in both schools and at home.
+
+Europe and Central Asia have no visible bars because our dataset records zero countries permitting corporal punishment in either category. This does not necessarily mean corporal punishment never occurs in these regions, but rather that no countries are recorded as legally permitting it under the categories examined.
+
+These results represent country counts rather than regional percentages. Therefore, differences in the total number of countries across regions should be considered when interpreting the findings.
+
